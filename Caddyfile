@@ -4,24 +4,21 @@
 	persist_config off
 	auto_https off
 
-	# Order directives - geoip2_vars must come first to set variables
+	# Ensure geo vars are set before we use them anywhere
 	order geoip2_vars first
-	order rate_limit before basic_auth
+	order rate_limit before reverse_proxy
 
-	# runtime logs
 	log {
 		format json
 	}
 
-	# server options
 	servers {
-		# Trust all proxies since Railway's edge proxies don't have static IPs
-		trusted_proxies static 0.0.0.0/0 ::/0
-		# Use strict mode to parse X-Forwarded-For from right-to-left (more secure)
+		# ✅ Trust only private proxy hops (typical for Railway -> container networking)
+		# This prevents spoofing X-Forwarded-For from the public internet.
+		trusted_proxies static private_ranges
 		trusted_proxies_strict
 	}
 
-	# GeoIP2 database configuration
 	geoip2 {
 		databaseDirectory "/usr/share/GeoIP/"
 		editionID "GeoLite2-Country"
@@ -42,7 +39,6 @@
 	unhealthy_request_count 200
 }
 
-# Security headers
 (security_headers) {
 	header {
 		X-Frame-Options "SAMEORIGIN"
@@ -53,7 +49,6 @@
 	}
 }
 
-# Rate limiting snippet
 (rate_limiting) {
 	rate_limit {
 		zone general {
@@ -94,21 +89,19 @@
 	}
 }
 
-# site block
 :{$PORT} {
 	log {
 		format json
 	}
 
-	# IMPORTANT: Initialize geoip2 variables FIRST for ALL requests
-	# This must run before any matchers that use geoip2 variables
+	# Must be first inside the site: sets geoip2.* based on {client_ip} (trusted proxies)
 	geoip2_vars trusted_proxies
 
-	# Apply security headers globally
 	import security_headers
 
-	# Debug endpoint
-	route /debug/ip {
+	# Debug endpoint (kept)
+	@debug path /debug/ip
+	handle @debug {
 		respond "Remote IP: {remote_host}
 Client IP: {client_ip}
 X-Forwarded-For: {header.X-Forwarded-For}
@@ -117,18 +110,19 @@ GeoIP Country: {geoip2.country_code}
 GeoIP Country Name: {geoip2.country_name}"
 	}
 
-	# Geo-blocking - block if NOT in Scandinavia AND NOT private IP
+	# ✅ Geo allowlist: Scandinavia + Nordics (NO, SE, DK, FI, IS)
+	# Block everything else (but allow private ranges for internal calls / local testing)
 	@blocked_geo {
-		not expression `{geoip2.country_code} in ["NO", "SE", "DK", "FI", "IS"]`
+		not expression `{geoip2.country_code} in ["NO","SE","DK","FI","IS"]`
 		not remote_ip private_ranges
-		not path /debug/ip
 	}
 	respond @blocked_geo "Access denied - this service is only available in Scandinavia (detected: {geoip2.country_code})" 403
 
-	# Apply rate limiting
+	# ✅ Rate limit after geo-block (so blocked traffic doesn’t waste limiter capacity)
 	import rate_limiting
 
-	# OAuth2 paths must go to backend
+	# --- Routes to backends ---
+
 	handle /oauth2/* {
 		reverse_proxy {
 			dynamic a {
@@ -140,11 +134,14 @@ GeoIP Country Name: {geoip2.country_name}"
 			}
 			import lb_settings
 			import passive_health_checks
-			header_up Host {upstream_hostport}
+
+			# Usually you want the original Host preserved for apps behind the proxy:
+			# header_up Host {host}
+			# If your upstream truly needs upstream_hostport, keep your old line instead.
+			header_up Host {host}
 		}
 	}
 
-	# OAuth2 callback must go to backend
 	handle /login/oauth2/* {
 		reverse_proxy {
 			dynamic a {
@@ -156,11 +153,10 @@ GeoIP Country Name: {geoip2.country_name}"
 			}
 			import lb_settings
 			import passive_health_checks
-			header_up Host {upstream_hostport}
+			header_up Host {host}
 		}
 	}
 
-	# API paths go to backend - handle_path strips the /api prefix
 	handle_path /api/* {
 		reverse_proxy {
 			dynamic a {
@@ -172,11 +168,10 @@ GeoIP Country Name: {geoip2.country_name}"
 			}
 			import lb_settings
 			import passive_health_checks
-			header_up Host {upstream_hostport}
+			header_up Host {host}
 		}
 	}
 
-	# Catch-all: proxy everything else to frontend
 	handle {
 		reverse_proxy {
 			dynamic a {
@@ -188,7 +183,7 @@ GeoIP Country Name: {geoip2.country_name}"
 			}
 			import lb_settings
 			import passive_health_checks
-			header_up Host {upstream_hostport}
+			header_up Host {host}
 		}
 	}
 }
