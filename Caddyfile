@@ -13,8 +13,8 @@
 	}
 
 	servers {
-		# ✅ Trust only private proxy hops (typical for Railway -> container networking)
-		# This prevents spoofing X-Forwarded-For from the public internet.
+		# Trust only private proxy hops (typical for Railway -> container networking)
+		# Prevents spoofing X-Forwarded-For from the public internet.
 		trusted_proxies static private_ranges
 		trusted_proxies_strict
 	}
@@ -39,6 +39,7 @@
 	unhealthy_request_count 200
 }
 
+# Security headers
 (security_headers) {
 	header {
 		X-Frame-Options "SAMEORIGIN"
@@ -49,6 +50,7 @@
 	}
 }
 
+# Rate limiting snippet
 (rate_limiting) {
 	rate_limit {
 		zone general {
@@ -89,17 +91,19 @@
 	}
 }
 
+# site block
 :{$PORT} {
 	log {
 		format json
 	}
 
-	# Must be first inside the site: sets geoip2.* based on {client_ip} (trusted proxies)
+	# Initialize geoip2 variables first for all requests
 	geoip2_vars trusted_proxies
 
+	# Apply security headers globally
 	import security_headers
 
-	# Debug endpoint (kept)
+	# Debug endpoint
 	@debug path /debug/ip
 	handle @debug {
 		respond "Remote IP: {remote_host}
@@ -110,19 +114,19 @@ GeoIP Country: {geoip2.country_code}
 GeoIP Country Name: {geoip2.country_name}"
 	}
 
-	# ✅ Geo allowlist: Scandinavia + Nordics (NO, SE, DK, FI, IS)
+	# Geo allowlist: Scandinavia + Nordics (NO, SE, DK, FI, IS)
 	# Block everything else (but allow private ranges for internal calls / local testing)
 	@blocked_geo {
 		not expression `{geoip2.country_code} in ["NO","SE","DK","FI","IS"]`
 		not remote_ip private_ranges
+		not path /debug/ip
 	}
 	respond @blocked_geo "Access denied - this service is only available in Scandinavia (detected: {geoip2.country_code})" 403
 
-	# ✅ Rate limit after geo-block (so blocked traffic doesn’t waste limiter capacity)
+	# Apply rate limiting after geo-block
 	import rate_limiting
 
-	# --- Routes to backends ---
-
+	# OAuth2 paths -> backend
 	handle /oauth2/* {
 		reverse_proxy {
 			dynamic a {
@@ -135,13 +139,12 @@ GeoIP Country Name: {geoip2.country_name}"
 			import lb_settings
 			import passive_health_checks
 
-			# Usually you want the original Host preserved for apps behind the proxy:
-			# header_up Host {host}
-			# If your upstream truly needs upstream_hostport, keep your old line instead.
+			# Keep original host for backend (common for OAuth redirects/callbacks)
 			header_up Host {host}
 		}
 	}
 
+	# OAuth2 callback -> backend
 	handle /login/oauth2/* {
 		reverse_proxy {
 			dynamic a {
@@ -157,6 +160,8 @@ GeoIP Country Name: {geoip2.country_name}"
 		}
 	}
 
+	# API -> backend
+	# NOTE: handle_path strips /api. If your backend expects /api/*, change this to: handle /api/*
 	handle_path /api/* {
 		reverse_proxy {
 			dynamic a {
@@ -172,6 +177,8 @@ GeoIP Country Name: {geoip2.country_name}"
 		}
 	}
 
+	# Everything else -> frontend (Vite dev/preview)
+	# IMPORTANT: do NOT forward public Host header to Vite, or it will block "www.lettrett.no"
 	handle {
 		reverse_proxy {
 			dynamic a {
@@ -183,7 +190,9 @@ GeoIP Country Name: {geoip2.country_name}"
 			}
 			import lb_settings
 			import passive_health_checks
-			header_up Host {host}
+
+			# ✅ Intentionally no: header_up Host {host}
+			# Let Caddy use upstream host so Vite doesn't reject the request.
 		}
 	}
 }
