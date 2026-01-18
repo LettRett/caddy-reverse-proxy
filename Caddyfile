@@ -53,39 +53,43 @@
 	}
 }
 
-# Rate limiting snippet
+# Rate limiting snippet - MUCH MORE RELAXED
 (rate_limiting) {
 	rate_limit {
+		# General traffic - very generous
 		zone general {
 			key {client_ip}
-			events 200
+			events 1000
 			window 1m
 		}
 
+		# API calls - relaxed for normal usage
 		zone api {
 			match {
 				path /api/*
 			}
 			key {client_ip}
-			events 100
+			events 500
 			window 1m
 		}
 
+		# Auth endpoints - allow multiple retries
 		zone auth {
 			match {
 				path /oauth2/* /login/*
 			}
 			key {client_ip}
-			events 10
+			events 50
 			window 1m
 		}
 
+		# Login strict - more lenient for OAuth flow
 		zone login_strict {
 			match {
 				path /oauth2/authorization/* /login/oauth2/code/*
 			}
 			key {client_ip}
-			events 5
+			events 20
 			window 5m
 		}
 
