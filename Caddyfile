@@ -164,6 +164,42 @@ GeoIP Country Name: {geoip2.country_name}"
 		}
 	}
 
+	# AI chat service paths must go to the AI service (justitaChat) — these
+	# must come BEFORE the generic /api/* block below, since Caddy's
+	# handle/handle_path directives are first-match-wins. Unlike the Spring
+	# block, this uses plain `handle` (not `handle_path`): the AI service's
+	# FastAPI routes are already mounted with the /api prefix, so the path
+	# must be forwarded unchanged, not stripped.
+	handle /api/chat {
+		reverse_proxy {
+			dynamic a {
+				name {$AI_SERVICE_DOMAIN}
+				port {$AI_SERVICE_PORT}
+				refresh 1s
+				dial_timeout 30s
+				versions ipv4 ipv6
+			}
+			import lb_settings
+			import passive_health_checks
+			header_up Host {upstream_hostport}
+		}
+	}
+
+	handle /api/conversations* {
+		reverse_proxy {
+			dynamic a {
+				name {$AI_SERVICE_DOMAIN}
+				port {$AI_SERVICE_PORT}
+				refresh 1s
+				dial_timeout 30s
+				versions ipv4 ipv6
+			}
+			import lb_settings
+			import passive_health_checks
+			header_up Host {upstream_hostport}
+		}
+	}
+
 	# API paths go to backend - handle_path strips the /api prefix
 	handle_path /api/* {
 		reverse_proxy {
