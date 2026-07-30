@@ -7,6 +7,10 @@
 	# Order directives - geoip2_vars must come first to set variables
 	order geoip2_vars first
 	order rate_limit before basic_auth
+	# respond must run before handle/handle_path so the geo-block and
+	# scanner/attack-path blocking rules below actually short-circuit
+	# bad requests instead of being bypassed by the catch-all handle block
+	order respond before handle
 
 	# runtime logs
 	log {
