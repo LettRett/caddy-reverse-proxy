@@ -129,6 +129,12 @@ GeoIP Country Name: {geoip2.country_name}"
 	}
 	respond @blocked_geo "Access denied - this service is only available in Scandinavia (detected: {geoip2.country_code})" 403
 
+	# Block known scanner/vulnerability-probe paths - reject immediately with a
+	# plain 404 instead of proxying them upstream. Note: /.well-known/acme-challenge*
+	# is intentionally NOT included here so ACME cert validation keeps working.
+	@blocked_paths path /.env* /.env.local /.env.example /wp-admin* /wp-login.php /wp-json* /wp-includes* /admin* /administrator* /phpmyadmin* /cpanel* /.git* /.gitignore /.gitlab-ci.yml /.github* /node_modules* /config.php /backup* *.bak *.sql /shell.php /upload.php
+	respond @blocked_paths "Not Found" 404
+
 	# Apply rate limiting
 	import rate_limiting
 
