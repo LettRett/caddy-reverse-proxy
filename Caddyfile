@@ -132,6 +132,61 @@ GeoIP Country Name: {geoip2.country_name}"
 	# Apply rate limiting
 	import rate_limiting
 
+	# ===== Block common attack vectors / scanner paths =====
+	# Each matcher below targets a specific category of scanner/exploit traffic.
+	# All matches are rejected with 404 before reaching the backend or frontend.
+	# Legitimate paths (/api/*, /oauth2/*, /login/*, /assets/*,
+	# /.well-known/acme-challenge/*, /robots.txt, /sitemap.xml) are never matched here.
+
+	# Backup, temp, and editor swap files
+	@blocked_backup_files {
+		path *.bak *.backup *.tmp *.swp *~ *.old
+	}
+	respond @blocked_backup_files 404
+
+	# Hidden/dotfiles (excluding the ACME challenge path required for SSL issuance)
+	@blocked_dotfiles {
+		path_regexp (?i)^/\.[^/]
+		not path /.well-known/acme-challenge/*
+	}
+	respond @blocked_dotfiles 404
+
+	# Spring Boot actuator endpoints
+	@blocked_actuator {
+		path /actuator*
+	}
+	respond @blocked_actuator 404
+
+	# API documentation / introspection endpoints not served by this app
+	@blocked_api_docs {
+		path /swagger* /openapi* /graphql*
+	}
+	respond @blocked_api_docs 404
+
+	# Common CMS paths (this is not a CMS deployment)
+	@blocked_cms {
+		path /joomla* /drupal* /wordpress*
+	}
+	respond @blocked_cms 404
+
+	# Shell upload / webshell extensions
+	@blocked_shell_uploads {
+		path *.php *.phtml *.jsp *.jspx *.asp *.aspx
+	}
+	respond @blocked_shell_uploads 404
+
+	# Directory traversal attempts, including URL-encoded and double-encoded variants
+	@blocked_traversal {
+		path_regexp (?i)(\.\.\/|%2e%2e|%252e|%2f|%5c|%00)
+	}
+	respond @blocked_traversal 404
+
+	# Local/remote file inclusion attempts via query string
+	@blocked_lfi {
+		query include=* require=* file=*
+	}
+	respond @blocked_lfi 404
+
 	# OAuth2 paths must go to backend
 	handle /oauth2/* {
 		reverse_proxy {
