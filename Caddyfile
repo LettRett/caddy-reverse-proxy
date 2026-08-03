@@ -38,7 +38,7 @@
 (passive_health_checks) {
 	fail_duration 60s
 	max_fails 300
-	unhealthy_latency 5s
+	unhealthy_latency 20s
 	unhealthy_request_count 200
 }
 
