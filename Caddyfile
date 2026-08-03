@@ -130,13 +130,17 @@ GeoIP Country Name: {geoip2.country_name}"
 		not expression `{geoip2.country_code} in ["NO", "SE", "DK", "FI", "IS"]`
 		not remote_ip private_ranges
 		not path /debug/ip
+		not path /api/chat* /api/conversations*
 	}
 	respond @blocked_geo "Access denied - this service is only available in Scandinavia (detected: {geoip2.country_code})" 403
 
 	# Block known scanner/vulnerability-probe paths - reject immediately with a
 	# plain 404 instead of proxying them upstream. Note: /.well-known/acme-challenge*
 	# is intentionally NOT included here so ACME cert validation keeps working.
-	@blocked_paths path /.env* /.env.local /.env.example /wp-admin* /wp-login.php /wp-json* /wp-includes* /admin* /administrator* /phpmyadmin* /cpanel* /.git* /.gitignore /.gitlab-ci.yml /.github* /node_modules* /config.php /backup* *.bak *.sql /shell.php /upload.php
+	@blocked_paths {
+		path /.env* /.env.local /.env.example /wp-admin* /wp-login.php /wp-json* /wp-includes* /admin* /administrator* /phpmyadmin* /cpanel* /.git* /.gitignore /.gitlab-ci.yml /.github* /node_modules* /config.php /backup* *.bak *.sql /shell.php /upload.php
+		not path /api/chat* /api/conversations*
+	}
 	respond @blocked_paths "Not Found" 404
 
 	# Apply rate limiting
@@ -151,6 +155,7 @@ GeoIP Country Name: {geoip2.country_name}"
 	# Backup, temp, and editor swap files
 	@blocked_backup_files {
 		path *.bak *.backup *.tmp *.swp *~ *.old
+		not path /api/chat* /api/conversations*
 	}
 	respond @blocked_backup_files 404
 
@@ -158,42 +163,49 @@ GeoIP Country Name: {geoip2.country_name}"
 	@blocked_dotfiles {
 		path_regexp (?i)^/\.[^/]
 		not path /.well-known/acme-challenge/*
+		not path /api/chat* /api/conversations*
 	}
 	respond @blocked_dotfiles 404
 
 	# Spring Boot actuator endpoints
 	@blocked_actuator {
 		path /actuator*
+		not path /api/chat* /api/conversations*
 	}
 	respond @blocked_actuator 404
 
 	# API documentation / introspection endpoints not served by this app
 	@blocked_api_docs {
 		path /swagger* /openapi* /graphql*
+		not path /api/chat* /api/conversations*
 	}
 	respond @blocked_api_docs 404
 
 	# Common CMS paths (this is not a CMS deployment)
 	@blocked_cms {
 		path /joomla* /drupal* /wordpress*
+		not path /api/chat* /api/conversations*
 	}
 	respond @blocked_cms 404
 
 	# Shell upload / webshell extensions
 	@blocked_shell_uploads {
 		path *.php *.phtml *.jsp *.jspx *.asp *.aspx
+		not path /api/chat* /api/conversations*
 	}
 	respond @blocked_shell_uploads 404
 
 	# Directory traversal attempts, including URL-encoded and double-encoded variants
 	@blocked_traversal {
 		path_regexp (?i)(\.\.\/|%2e%2e|%252e|%2f|%5c|%00)
+		not path /api/chat* /api/conversations*
 	}
 	respond @blocked_traversal 404
 
 	# Local/remote file inclusion attempts via query string
 	@blocked_lfi {
 		query include=* require=* file=*
+		not path /api/chat* /api/conversations*
 	}
 	respond @blocked_lfi 404
 
