@@ -1,33 +1,41 @@
-# global options
+# =========================
+# Global options
+# =========================
 {
 	admin off
 	persist_config off
 	auto_https off
 
-	# Order directives - geoip2_vars must come first to set variables
+	# geoip2_vars must populate GeoIP placeholders before
+	# matchers using those placeholders are evaluated.
 	order geoip2_vars first
+
+	# Scanner/geo blocking should happen before catch-all handle blocks.
+	order respond before handle
+
+	# Rate limiting before auth/proxy handling.
 	order rate_limit before basic_auth
 
-	# runtime logs
 	log {
 		format json
 	}
 
-	# server options
 	servers {
-		# Trust all proxies since Railway's edge proxies don't have static IPs
+		# Railway edge proxies do not have static IP ranges.
 		trusted_proxies static 0.0.0.0/0 ::/0
-		# Use strict mode to parse X-Forwarded-For from right-to-left (more secure)
 		trusted_proxies_strict
 	}
 
-	# GeoIP2 database configuration
 	geoip2 {
 		databaseDirectory "/usr/share/GeoIP/"
 		editionID "GeoLite2-Country"
 	}
 }
 
+
+# =========================
+# Reverse-proxy settings
+# =========================
 (lb_settings) {
 	lb_policy round_robin
 	lb_retries 100
@@ -38,56 +46,68 @@
 (passive_health_checks) {
 	fail_duration 60s
 	max_fails 300
-	unhealthy_latency 20s
+	unhealthy_latency 5s
 	unhealthy_request_count 200
 }
 
+
+# =========================
 # Security headers
+# =========================
 (security_headers) {
 	header {
 		X-Frame-Options "SAMEORIGIN"
 		X-Content-Type-Options "nosniff"
 		X-XSS-Protection "1; mode=block"
 		Referrer-Policy "strict-origin-when-cross-origin"
+
+		# Do not reveal Caddy/server implementation.
 		-Server
 	}
 }
 
-# Rate limiting snippet - MUCH MORE RELAXED
+
+# =========================
+# Rate limiting
+# =========================
 (rate_limiting) {
 	rate_limit {
-		# General traffic - very generous
+
+		# General traffic.
 		zone general {
 			key {client_ip}
 			events 1000
 			window 1m
 		}
 
-		# API calls - relaxed for normal usage
+		# API requests.
 		zone api {
 			match {
 				path /api/*
 			}
+
 			key {client_ip}
 			events 500
 			window 1m
 		}
 
-		# Auth endpoints - allow multiple retries
+		# OAuth/login.
 		zone auth {
 			match {
 				path /oauth2/* /login/*
 			}
+
 			key {client_ip}
 			events 50
 			window 1m
 		}
 
-		# Login strict - more lenient for OAuth flow
+		# Sensitive OAuth flow endpoints.
 		zone login_strict {
 			match {
 				path /oauth2/authorization/* /login/oauth2/code/*
 			}
+
 			key {client_ip}
 			events 20
 			window 5m
@@ -98,20 +118,30 @@
 	}
 }
 
-# site block
+
+# =========================
+# Site
+# =========================
 :{$PORT} {
+
 	log {
 		format json
 	}
 
-	# IMPORTANT: Initialize geoip2 variables FIRST for ALL requests
-	# This must run before any matchers that use geoip2 variables
+	# Populate GeoIP variables.
 	geoip2_vars trusted_proxies
 
-	# Apply security headers globally
+	# Security headers on all responses.
 	import security_headers
 
-	# Debug endpoint
+
+	# ============================================================
+	# Debug
+	#
+	# IMPORTANT:
+	# Consider removing this endpoint in production once debugging
+	# is finished because it exposes proxy/IP/GeoIP information.
+	# ============================================================
 	route /debug/ip {
 		respond "Remote IP: {remote_host}
 Client IP: {client_ip}
@@ -121,18 +151,235 @@ GeoIP Country: {geoip2.country_code}
 GeoIP Country Name: {geoip2.country_name}"
 	}
 
-	# Geo-blocking - block if NOT in Scandinavia AND NOT private IP
-	@blocked_geo {
-		not expression `{geoip2.country_code} in ["NO", "SE", "DK", "FI", "IS"]`
-		not remote_ip private_ranges
-		not path /debug/ip
-	}
-	respond @blocked_geo "Access denied - this service is only available in Scandinavia (detected: {geoip2.country_code})" 403
 
-	# Apply rate limiting
+	# ============================================================
+	# SCANNER / ATTACK-PATH BLOCKING
+	#
+	# These protections apply worldwide.
+	#
+	# Public users and Google can access the normal website, but
+	# requests for common secrets/admin/scanner paths are rejected
+	# immediately without reaching your backend/frontend.
+	# ============================================================
+
+
+	# ------------------------------------------------------------
+	# High-value scanner targets
+	# ------------------------------------------------------------
+	@blocked_paths {
+		path /.env*
+		path /.env.local
+		path /.env.example
+
+		path /.git*
+		path /.gitignore
+		path /.gitlab-ci.yml
+		path /.github*
+
+		path /wp-admin*
+		path /wp-login.php
+		path /wp-json*
+		path /wp-includes*
+
+		path /administrator*
+		path /phpmyadmin*
+		path /cpanel*
+
+		path /node_modules*
+
+		path /config.php
+		path /backup*
+
+		path /shell.php
+		path /upload.php
+
+		path *.bak
+		path *.sql
+
+		# Preserve your public AI endpoints from overly broad rules.
+		not path /api/chat*
+		not path /api/conversations*
+	}
+
+	respond @blocked_paths "Not Found" 404
+
+
+	# ------------------------------------------------------------
+	# Backup/temp/editor files
+	# ------------------------------------------------------------
+	@blocked_backup_files {
+		path *.bak
+		path *.backup
+		path *.tmp
+		path *.swp
+		path *~
+		path *.old
+
+		not path /api/chat*
+		not path /api/conversations*
+	}
+
+	respond @blocked_backup_files "Not Found" 404
+
+
+	# ------------------------------------------------------------
+	# Hidden files / dotfiles
+	#
+	# Do not block /.well-known/acme-challenge/*
+	# ------------------------------------------------------------
+	@blocked_dotfiles {
+		path_regexp hidden_file (?i)^/\.[^/]
+
+		not path /.well-known/acme-challenge/*
+		not path /api/chat*
+		not path /api/conversations*
+	}
+
+	respond @blocked_dotfiles "Not Found" 404
+
+
+	# ------------------------------------------------------------
+	# Spring Boot actuator
+	# ------------------------------------------------------------
+	@blocked_actuator {
+		path /actuator*
+	}
+
+	respond @blocked_actuator "Not Found" 404
+
+
+	# ------------------------------------------------------------
+	# API documentation / introspection endpoints
+	#
+	# Remove these rules if you intentionally expose any of them.
+	# ------------------------------------------------------------
+	@blocked_api_docs {
+		path /swagger*
+		path /openapi*
+		path /graphql*
+	}
+
+	respond @blocked_api_docs "Not Found" 404
+
+
+	# ------------------------------------------------------------
+	# CMS scanner paths
+	# ------------------------------------------------------------
+	@blocked_cms {
+		path /joomla*
+		path /drupal*
+		path /wordpress*
+	}
+
+	respond @blocked_cms "Not Found" 404
+
+
+	# ------------------------------------------------------------
+	# Webshell/script extensions
+	# ------------------------------------------------------------
+	@blocked_shell_uploads {
+		path *.php
+		path *.phtml
+		path *.jsp
+		path *.jspx
+		path *.asp
+		path *.aspx
+
+		not path /api/chat*
+		not path /api/conversations*
+	}
+
+	respond @blocked_shell_uploads "Not Found" 404
+
+
+	# ------------------------------------------------------------
+	# Directory traversal / encoded traversal
+	# ------------------------------------------------------------
+	@blocked_traversal {
+		path_regexp traversal (?i)(\.\.\/|%2e%2e|%252e|%2f|%5c|%00)
+
+		not path /api/chat*
+		not path /api/conversations*
+	}
+
+	respond @blocked_traversal "Not Found" 404
+
+
+	# ------------------------------------------------------------
+	# File inclusion probes
+	# ------------------------------------------------------------
+	@blocked_lfi {
+		query include=*
+		query require=*
+		query file=*
+
+		not path /api/chat*
+		not path /api/conversations*
+	}
+
+	respond @blocked_lfi "Not Found" 404
+
+
+	# ============================================================
+	# RATE LIMITING
+	# ============================================================
 	import rate_limiting
 
-	# OAuth2 paths must go to backend
+
+	# ============================================================
+	# GEO RESTRICTION
+	#
+	# IMPORTANT CHANGE:
+	#
+	# We do NOT geo-block:
+	#
+	# /
+	# /kurs/*
+	# /blogg/*
+	# /assets/*
+	# /robots.txt
+	# /sitemap.xml
+	#
+	# Therefore Google can crawl and render the website normally.
+	#
+	# Only backend/auth functionality is restricted.
+	# ============================================================
+
+
+	# ------------------------------------------------------------
+	# Norway-only protected routes
+	#
+	# /api/chat and /api/conversations stay globally accessible
+	# because your original config explicitly exempted them.
+	# ------------------------------------------------------------
+	@blocked_geo_protected {
+
+		path /api/*
+		path /oauth2/*
+		path /login/*
+
+		# Keep AI service public.
+		not path /api/chat*
+		not path /api/conversations*
+
+		# Norway only.
+		not expression `{geoip2.country_code} == "NO"`
+
+		# Do not interfere with internal/private traffic.
+		not remote_ip private_ranges
+	}
+
+	respond @blocked_geo_protected "Access denied - this service is only available in Norway (detected: {geoip2.country_code})" 403
+
+
+	# ============================================================
+	# ROUTING
+	# ============================================================
+
+
+	# ------------------------------------------------------------
+	# OAuth2 authorization
+	# ------------------------------------------------------------
 	handle /oauth2/* {
 		reverse_proxy {
 			dynamic a {
@@ -142,13 +389,18 @@ GeoIP Country Name: {geoip2.country_name}"
 				dial_timeout 30s
 				versions ipv4 ipv6
 			}
+
 			import lb_settings
 			import passive_health_checks
+
 			header_up Host {upstream_hostport}
 		}
 	}
 
-	# OAuth2 callback must go to backend
+
+	# ------------------------------------------------------------
+	# OAuth2 callbacks
+	# ------------------------------------------------------------
 	handle /login/oauth2/* {
 		reverse_proxy {
 			dynamic a {
@@ -158,18 +410,24 @@ GeoIP Country Name: {geoip2.country_name}"
 				dial_timeout 30s
 				versions ipv4 ipv6
 			}
+
 			import lb_settings
 			import passive_health_checks
+
 			header_up Host {upstream_hostport}
 		}
 	}
 
-	# AI chat service paths must go to the AI service (justitaChat) — these
-	# must come BEFORE the generic /api/* block below, since Caddy's
-	# handle/handle_path directives are first-match-wins. Unlike the Spring
-	# block, this uses plain `handle` (not `handle_path`): the AI service's
-	# FastAPI routes are already mounted with the /api prefix, so the path
-	# must be forwarded unchanged, not stripped.
+
+	# ============================================================
+	# AI SERVICE
+	#
+	# These must appear before the generic /api/* handler.
+	#
+	# We use handle, not handle_path, because FastAPI expects the
+	# /api prefix to remain.
+	# ============================================================
+
 	handle /api/chat {
 		reverse_proxy {
 			dynamic a {
@@ -179,11 +437,32 @@ GeoIP Country Name: {geoip2.country_name}"
 				dial_timeout 30s
 				versions ipv4 ipv6
 			}
+
 			import lb_settings
 			import passive_health_checks
+
 			header_up Host {upstream_hostport}
 		}
 	}
+
+
+	handle /api/chat/* {
+		reverse_proxy {
+			dynamic a {
+				name {$AI_SERVICE_DOMAIN}
+				port {$AI_SERVICE_PORT}
+				refresh 1s
+				dial_timeout 30s
+				versions ipv4 ipv6
+			}
+
+			import lb_settings
+			import passive_health_checks
+
+			header_up Host {upstream_hostport}
+		}
+	}
+
 
 	handle /api/conversations* {
 		reverse_proxy {
@@ -194,13 +473,30 @@ GeoIP Country Name: {geoip2.country_name}"
 				dial_timeout 30s
 				versions ipv4 ipv6
 			}
+
 			import lb_settings
 			import passive_health_checks
+
 			header_up Host {upstream_hostport}
 		}
 	}
 
-	# API paths go to backend - handle_path strips the /api prefix
+
+	# ============================================================
+	# SPRING BACKEND
+	#
+	# handle_path removes /api before forwarding.
+	#
+	# Example:
+	#
+	# /api/courses
+	#
+	# becomes:
+	#
+	# /courses
+	#
+	# upstream.
+	# ============================================================
 	handle_path /api/* {
 		reverse_proxy {
 			dynamic a {
@@ -210,13 +506,32 @@ GeoIP Country Name: {geoip2.country_name}"
 				dial_timeout 30s
 				versions ipv4 ipv6
 			}
+
 			import lb_settings
 			import passive_health_checks
+
 			header_up Host {upstream_hostport}
 		}
 	}
 
-	# Catch-all: proxy everything else to frontend
+
+	# ============================================================
+	# FRONTEND
+	#
+	# Globally accessible.
+	#
+	# This includes:
+	#
+	# /
+	# /kurs/*
+	# /blogg/*
+	# /assets/*
+	# /robots.txt
+	# /sitemap.xml
+	#
+	# Googlebot and other search engines can therefore crawl and
+	# render the public website normally.
+	# ============================================================
 	handle {
 		reverse_proxy {
 			dynamic a {
@@ -226,8 +541,10 @@ GeoIP Country Name: {geoip2.country_name}"
 				dial_timeout 30s
 				versions ipv4 ipv6
 			}
+
 			import lb_settings
 			import passive_health_checks
+
 			header_up Host {upstream_hostport}
 		}
 	}
