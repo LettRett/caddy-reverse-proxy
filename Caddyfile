@@ -232,7 +232,10 @@ GeoIP Country Name: {geoip2.country_name}"
 	# Do not block /.well-known/acme-challenge/*
 	# ------------------------------------------------------------
 	@blocked_dotfiles {
-		path_regexp hidden_file (?i)^/\.[^/]
+		# (^|/)\. matches a dot-prefixed segment anywhere in the path, not
+		# just at the root - catches /deploy/.env, /shared/.git/config,
+		# /backup/.htaccess, etc., not only /.env at the domain root.
+		path_regexp hidden_file (?i)(^|/)\.[^/]+
 
 		not path /.well-known/acme-challenge/*
 		not path /api/chat*
